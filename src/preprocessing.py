@@ -280,14 +280,18 @@ def enrich_with_gdp_per_capita(df, spark: SparkSession,
     # ── 2. Tải & hồi quy dân số ─────────────────────────────────────────────
     pop_snapshot_pd = load_population_data(spark, pop_path)
     pop_est_pd      = estimate_population_all_years(pop_snapshot_pd)
+    # Ép kiểu tường minh
+    pop_est_pd["year"]           = pop_est_pd["year"].astype(float).astype(int)
+    pop_est_pd["population_est"] = pop_est_pd["population_est"].astype(float)
+    pop_est_pd["cca3"]           = pop_est_pd["cca3"].astype(str)
 
-    # Chuyển pop_est về Spark
-    pop_schema = StructType([
-        StructField("cca3",           StringType(), True),
-        StructField("year",           IntegerType(), True),
-        StructField("population_est", DoubleType(),  True),
-    ])
-    pop_est_spark = spark.createDataFrame(pop_est_pd, schema=pop_schema)
+    # Chọn đúng thứ tự cột rồi để Spark tự infer kiểu
+    pop_est_pd = pop_est_pd[["cca3", "year", "population_est"]]
+    pop_est_spark = (
+        spark.createDataFrame(pop_est_pd)
+        .withColumn("year",           F.col("year").cast(IntegerType()))
+        .withColumn("population_est", F.col("population_est").cast(DoubleType()))
+    )
 
     # ── 3. Xây mapping tên → iso_a3 từ Big Mac ──────────────────────────────
     # Big Mac: name (vd "Argentina"), iso_a3 (vd "ARG")
@@ -299,32 +303,120 @@ def enrich_with_gdp_per_capita(df, spark: SparkSession,
     # GDP 1999: country_name (vd "Argentina")
     gdp_names_pd = gdp_long.select("country_name").distinct().toPandas()
 
-    # Exact match (case-insensitive)
-    bm_name_map["name_lower"] = bm_name_map["name"].str.lower().str.strip()
-    gdp_names_pd["name_lower"] = gdp_names_pd["country_name"].str.lower().str.strip()
-    merged_names = gdp_names_pd.merge(bm_name_map, on="name_lower", how="left")
+    # ── Tầng 1: Exact match (case-insensitive) ────────────────────────────────
+    bm_name_map["name_lower"]      = bm_name_map["name"].str.lower().str.strip()
+    gdp_names_pd["name_lower"]     = gdp_names_pd["country_name"].str.lower().str.strip()
+    bm_lower_to_iso = bm_name_map.set_index("name_lower")["iso_a3"].to_dict()
 
-    name_to_iso = (
-        merged_names[merged_names["iso_a3"].notna()]
-        .set_index("country_name")["iso_a3"]
-        .to_dict()
-    )
+    # ── Tầng 2: Bảng alias thủ công cho các tên khác nhau phổ biến ───────────
+    _MANUAL_ALIAS = {
+        # GDP 1999 name (lower)           : Big Mac name (lower)
+        "united states":                   "united states",
+        "usa":                             "united states",
+        "south korea":                     "south korea",
+        "korea, rep.":                     "south korea",
+        "korea, south":                    "south korea",
+        "united kingdom":                  "britain",
+        "uk":                              "britain",
+        "great britain":                   "britain",
+        "euro area":                       "euro area",
+        "euro zone":                       "euro area",
+        "euizon":                          "euro area",
+        "czech republic":                  "czech republic",
+        "czechia":                         "czech republic",
+        "hong kong sar, china":            "hong kong",
+        "hong kong, china":                "hong kong",
+        "hong kong s.a.r.":                "hong kong",
+        "china, p.r.: hong kong":          "hong kong",
+        "taiwan, province of china":       "taiwan",
+        "taiwan":                          "taiwan",
+        "china, p.r.: mainland":           "china",
+        "venezuela, rb":                   "venezuela",
+        "venezuela (bolivarian republic)": "venezuela",
+        "iran, islamic rep.":              "sri lanka",   # placeholder – handled below
+        "iran (islamic republic of)":      "sri lanka",
+        "russian federation":              "russia",
+        "dominican rep.":                  "dominican republic",
+        "slovak republic":                 "slovakia",
+        "north macedonia":                 "north macedonia",
+        "republic of north macedonia":     "north macedonia",
+        "viet nam":                        "vietnam",
+        "lao pdr":                         "vietnam",    # placeholder
+        "egypt, arab rep.":                "egypt",
+        "pakistan":                        "pakistan",
+        "turkey":                          "turkey",
+        "türkiye":                         "turkey",
+        "kyrgyz republic":                 "kyrgyzstan",
+        "moldova":                         "moldova",
+        "republic of moldova":             "moldova",
+        "côte d'ivoire":                   "ivory coast",
+        "cote d'ivoire":                   "ivory coast",
+        "trinidad and tobago":             "trinidad & tobago",
+    }
+    # Xây bảng tra alias: gdp_name_lower → iso_a3
+    alias_to_iso: dict = {}
+    for gdp_alias, bm_name in _MANUAL_ALIAS.items():
+        iso = bm_lower_to_iso.get(bm_name.lower())
+        if iso:
+            alias_to_iso[gdp_alias] = iso
+
+    # ── Tầng 3: Fuzzy match (difflib) cho các tên vẫn chưa khớp ─────────────
+    import difflib
+    bm_lower_names = list(bm_lower_to_iso.keys())
+
+    def _fuzzy_iso(gdp_name_lower: str, cutoff: float = 0.88):
+        """Trả về iso_a3 từ tên gần giống nhất trong Big Mac (nếu score >= cutoff)."""
+        matches = difflib.get_close_matches(gdp_name_lower, bm_lower_names,
+                                            n=1, cutoff=cutoff)
+        if matches:
+            return bm_lower_to_iso[matches[0]]
+        return None
+
+    # Gộp 3 tầng thành name_to_iso
+    name_to_iso: dict = {}
+    fuzzy_log: list = []
+    for _, row in gdp_names_pd.iterrows():
+        cname     = row["country_name"]
+        cname_low = row["name_lower"]
+
+        iso = (bm_lower_to_iso.get(cname_low)          # tầng 1: exact
+               or alias_to_iso.get(cname_low)           # tầng 2: alias
+               or _fuzzy_iso(cname_low))                # tầng 3: fuzzy
+
+        if iso:
+            name_to_iso[cname] = iso
+            if cname_low not in bm_lower_to_iso and cname_low not in alias_to_iso:
+                fuzzy_log.append(f"  fuzzy: '{cname}' → '{iso}'")
+
     matched = len(name_to_iso)
     total   = len(gdp_names_pd)
     print(f"[Enrich] Khớp tên quốc gia GDP↔BigMac: {matched}/{total} quốc gia")
+    if fuzzy_log:
+        print(f"[Enrich] Fuzzy matches ({len(fuzzy_log)}):")
+        for l in fuzzy_log[:20]:
+            print(l)
+        if len(fuzzy_log) > 20:
+            print(f"  ... và {len(fuzzy_log) - 20} khớp khác")
 
     # ── 4. Thêm cột iso_a3 vào GDP long ─────────────────────────────────────
     gdp_long_pd = gdp_long.toPandas()
     gdp_long_pd["iso_a3"] = gdp_long_pd["country_name"].map(name_to_iso)
     gdp_long_clean = gdp_long_pd[gdp_long_pd["iso_a3"].notna()].copy()
 
-    gdp_schema = StructType([
-        StructField("country_name",  StringType(),  True),
-        StructField("year",          IntegerType(), True),
-        StructField("gdp_billions",  DoubleType(),  True),
-        StructField("iso_a3",        StringType(),  True),
-    ])
-    gdp_with_iso = spark.createDataFrame(gdp_long_clean, schema=gdp_schema)
+    # Ép kiểu + đảm bảo đúng thứ tự cột trước khi đưa vào Spark
+    gdp_long_clean["year"]         = gdp_long_clean["year"].astype(float).astype(int)
+    gdp_long_clean["gdp_billions"] = gdp_long_clean["gdp_billions"].astype(float)
+    gdp_long_clean["country_name"] = gdp_long_clean["country_name"].astype(str)
+    gdp_long_clean["iso_a3"]       = gdp_long_clean["iso_a3"].astype(str)
+
+    # Chọn đúng thứ tự cột khớp schema, tránh Spark map nhầm vị trí
+    gdp_long_clean = gdp_long_clean[["country_name", "year", "gdp_billions", "iso_a3"]]
+
+    gdp_with_iso = (
+        spark.createDataFrame(gdp_long_clean)          # để Spark tự infer kiểu
+        .withColumn("year",         F.col("year").cast(IntegerType()))
+        .withColumn("gdp_billions", F.col("gdp_billions").cast(DoubleType()))
+    )
 
     # ── 5. Join GDP + Population → gdp_per_capita ───────────────────────────
     gdp_pc = (

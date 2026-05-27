@@ -53,7 +53,7 @@ btl_truc_quan_hoa/
 ---
 
 ### 3. World Population (`world_population.csv`)
-- **Nguồn**: [Kaggle – hasibalmuzdadid/world-population-analysis](https://www.kaggle.com/datasets/hasibalmuzdadid/world-population-analysis)
+- **Nguồn**: [Kaggle – iamsouravbanerjee/world-population-dataset](https://www.kaggle.com/datasets/iamsouravbanerjee/world-population-dataset)
 - **Mô tả**: Dân số của từng quốc gia tại các năm snapshot: 1970, 1980, 1990, 2000, 2010, 2015, 2020, 2022.
 - **Cột quan trọng**: `CCA3` (mã ISO 3 ký tự), `2022 Population`, `2020 Population`, v.v.
 

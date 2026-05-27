@@ -85,9 +85,9 @@ def download_gdp_1999_dataset() -> str:
 
 
 def download_population_dataset() -> str:
-    """Tải 'world_population.csv' (hasibalmuzdadid/world-population-analysis)."""
+    """Tải 'world_population.csv' (iamsouravbanerjee/world-population-dataset)."""
     return _kaggle_download_csv(
-        dataset_handle="hasibalmuzdadid/world-population-analysis",
+        dataset_handle="iamsouravbanerjee/world-population-dataset",
         dest_path=DEFAULT_POP,
         file_keyword="world_population",
     )
