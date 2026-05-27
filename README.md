@@ -1,317 +1,219 @@
-# Big Mac Index – Phân tích dữ liệu với Apache Spark
+# Big Mac Index – Phân tích & Trực quan hóa dữ liệu
 
-Dự án thực hiện **Preprocessing**, **EDA**, **Linear Regression** và **Trực quan hóa dữ liệu**
-cho bộ dữ liệu *Big Mac Index* của The Economist, sử dụng **Apache Spark (PySpark)**.
-
----
-
-## Mục lục
-
-1. [Giới thiệu dataset](#1-giới-thiệu-dataset)
-2. [Cấu trúc dự án](#2-cấu-trúc-dự-án)
-3. [Cài đặt môi trường](#3-cài-đặt-môi-trường)
-4. [Tải dataset](#4-tải-dataset)
-5. [Cách chạy](#5-cách-chạy)
-6. [Giải thích từng bước](#6-giải-thích-từng-bước)
-7. [Kết quả đầu ra](#7-kết-quả-đầu-ra)
-8. [Phân tích & nhận xét](#8-phân-tích--nhận-xét)
+Dự án sử dụng **PySpark** để xử lý và phân tích bộ dữ liệu Big Mac Index kết hợp với dữ liệu GDP và dân số thế giới, nhằm khám phá mối quan hệ giữa giá cả, tỉ giá hối đoái và mức sống theo từng quốc gia, từng năm.
 
 ---
 
-## 1. Giới thiệu dataset
+## Cấu trúc dự án
 
-| Thuộc tính | Thông tin |
-|---|---|
-| Nguồn | [Kaggle – Big Mac Index Data](https://www.kaggle.com/datasets/mrmorj/big-mac-index-data) |
-| File | `big mac.csv` (~181 KB) |
-| Số cột | 19 |
-| Giấy phép | CC0 Public Domain |
+```
+btl_truc_quan_hoa/
+├── main.py                              # Pipeline chính
+├── requirements.txt
+├── data/
+│   ├── big mac.csv                      # Dữ liệu Big Mac Index
+│   ├── GDP by Country 1999-2022.csv     # Tổng GDP quốc gia (tỷ USD)
+│   └── world_population.csv             # Dân số thế giới theo năm
+├── src/
+│   ├── preprocessing.py      # Tiền xử lý & enrich dữ liệu
+│   ├── eda.py                # Phân tích khám phá (EDA)
+│   ├── regression.py         # Hồi quy tuyến tính
+│   └── visualization.py      # Vẽ biểu đồ
+└── outputs/                  # Kết quả: biểu đồ PNG, metrics JSON, snapshot CSV
+```
 
-### Các cột chính
+---
+
+## Datasets sử dụng
+
+### 1. Big Mac Index (`big mac.csv`)
+- **Nguồn**: [The Economist – Big Mac Index](https://www.kaggle.com/datasets/mrmorj/big-mac-index-data)
+- **Mô tả**: Giá bánh Big Mac tại hơn 50 quốc gia, ghi nhận từ năm 2000 đến 2022, khoảng 2 lần/năm.
+- **Các cột chính**:
 
 | Cột | Ý nghĩa |
 |---|---|
 | `date` | Ngày khảo sát |
-| `iso_a3` | Mã quốc gia (ISO 3 ký tự) |
-| `currency_code` | Mã tiền tệ |
+| `iso_a3` | Mã quốc gia ISO 3 ký tự |
 | `name` | Tên quốc gia |
-| `local_price` | Giá Big Mac bằng tiền địa phương |
+| `local_price` | Giá Big Mac theo tiền tệ địa phương |
 | `dollar_ex` | Tỉ giá hối đoái so với USD |
 | `dollar_price` | Giá Big Mac quy đổi sang USD |
-| `USD_raw` | Chỉ số Big Mac thô so với USD (%) |
-| `GDP_dollar` | GDP bình quân đầu người (USD) |
+| `USD_raw` | Chỉ số định giá thô so với USD (> 0: đắt hơn, < 0: rẻ hơn) |
+| `GDP_dollar` | GDP bình quân đầu người (USD) – ban đầu có nhiều giá trị null |
 | `adj_price` | Giá điều chỉnh theo GDP |
-| `USD_adjusted` | Chỉ số điều chỉnh theo GDP so với USD |
 
 ---
 
-## 2. Cấu trúc dự án
-
-```
-btl_truc_quan_hoa/
-│
-├── data/                        ← Đặt file CSV vào đây
-│   └── big mac.csv
-│
-├── src/
-│   ├── preprocessing.py         ← Tiền xử lý dữ liệu
-│   ├── eda.py                   ← Phân tích khám phá (EDA)
-│   ├── regression.py            ← Hồi quy tuyến tính (MLlib)
-│   └── visualization.py        ← Vẽ biểu đồ (matplotlib/seaborn)
-│
-├── outputs/                     ← Kết quả tự động tạo ra sau khi chạy
-│   ├── clean_data.parquet
-│   ├── regression_metrics.json
-│   ├── bar_top15_highest_price.png
-│   ├── bar_top15_lowest_price.png
-│   ├── line_avg_price_by_year.png
-│   ├── hist_dollar_price.png
-│   ├── scatter_gdp_vs_price.png
-│   ├── heatmap_corr.png
-│   ├── boxplot_price_by_year.png
-│   ├── line_usa_price.png
-│   ├── scatter_actual_vs_pred.png
-│   └── residual_plot.png
-│
-├── main.py                      ← Entry point chạy toàn bộ pipeline
-├── requirements.txt
-└── README.md
-```
+### 2. GDP by Country 1999–2022 (`GDP by Country 1999-2022.csv`)
+- **Nguồn**: [Kaggle – alejopaullier/-gdp-by-country-1999-2022](https://www.kaggle.com/datasets/alejopaullier/-gdp-by-country-1999-2022)
+- **Mô tả**: Tổng GDP hàng năm của từng quốc gia từ 1999 đến 2022, đơn vị **tỷ USD** (billions USD).
+- **Định dạng**: Wide format – mỗi hàng là 1 quốc gia, mỗi cột là 1 năm.
 
 ---
 
-## 3. Cài đặt môi trường
+### 3. World Population (`world_population.csv`)
+- **Nguồn**: [Kaggle – hasibalmuzdadid/world-population-analysis](https://www.kaggle.com/datasets/hasibalmuzdadid/world-population-analysis)
+- **Mô tả**: Dân số của từng quốc gia tại các năm snapshot: 1970, 1980, 1990, 2000, 2010, 2015, 2020, 2022.
+- **Cột quan trọng**: `CCA3` (mã ISO 3 ký tự), `2022 Population`, `2020 Population`, v.v.
 
-### Yêu cầu hệ thống
-- Python ≥ 3.8
-- Java ≥ 8 (bắt buộc để chạy Spark)
+---
 
-### Kiểm tra Java
+## Xử lý dữ liệu
 
-```bash
-java -version
+### Bước 1 – Làm sạch Big Mac (`clean_data`)
+1. **Chuẩn hoá tên cột**: xoá khoảng trắng, thay `-` và space thành `_`.
+2. **Ép kiểu**: các cột số được cast sang `DoubleType`; cột `date` sang `DateType`.
+3. **Trích xuất năm**: thêm cột `year` từ `date`.
+4. **Xoá dòng thiếu**: bỏ các dòng null tại các cột quan trọng `local_price`, `dollar_price`, `dollar_ex`.
+
+### Bước 2 – Tính GDP per capita và điền null (`enrich_with_gdp_per_capita`)
+
+Cột `GDP_dollar` trong Big Mac có rất nhiều giá trị null (đặc biệt các năm đầu). Quy trình điền giá trị:
+
+#### 2a – Chuyển GDP sang long format
+File `GDP by Country 1999-2022.csv` ở dạng wide được **unpivot** thành:
+```
+(country_name, year, gdp_billions)
 ```
 
-Nếu chưa có Java:
+#### 2b – Hồi quy tuyến tính dân số (per country)
+File dân số chỉ có dữ liệu tại 8 năm snapshot (1970, 1980, …, 2022). Với mỗi quốc gia, dùng **`numpy.polyfit` bậc 1** (linear regression) trên các snapshot để ước lượng dân số cho **mọi năm từ 1999 đến 2022**:
+
+$$\text{population\_est}(y) = \alpha \cdot y + \beta$$
+
+#### 2c – Tính GDP per capita
+$$\text{GDP\_dollar} = \frac{\text{gdp\_billions} \times 10^9}{\text{population\_est}}$$
+
+#### 2d – Join và điền null
+- Join Big Mac `(iso_a3, year)` với bảng GDP per capita `(country_name → iso_a3, year)`.
+- Tên quốc gia trong GDP 1999 được ánh xạ sang `iso_a3` qua bảng tham chiếu lấy từ chính Big Mac.
+- Chỉ điền khi `GDP_dollar` đang **null** (`coalesce(GDP_dollar, gdp_per_capita)`), giữ nguyên giá trị cũ nếu đã có.
+
+### Bước 3 – EDA (`eda.py`)
+- Thống kê mô tả các cột số.
+- Thống kê số quốc gia, khoảng thời gian.
+- Top 10 quốc gia giá cao nhất / thấp nhất.
+- Giá trung bình toàn cầu theo năm.
+- Phân phối `dollar_price`.
+- Tương quan `GDP_dollar` – `dollar_price`.
+
+### Bước 4 – Hồi quy tuyến tính (`regression.py`)
+Dự đoán `dollar_price` từ các đặc trưng:
+
+| Feature | Ý nghĩa |
+|---|---|
+| `GDP_dollar` | GDP bình quân đầu người |
+| `dollar_ex` | Tỉ giá hối đoái |
+| `year` | Năm |
+
+Pipeline: `VectorAssembler → StandardScaler → LinearRegression`  
+Tỉ lệ train/test: **80/20**. Metrics đánh giá: R², RMSE, MAE.
+
+---
+
+## Biểu đồ được tạo ra (15 biểu đồ)
+
+### 1. `bar_top15_highest_price.png`
+- **Loại**: Horizontal bar chart
+- **Nội dung**: Top 15 quốc gia có giá Big Mac trung bình **cao nhất** (USD) trong toàn bộ lịch sử.
+- **Tính chất**: So sánh trực tiếp giữa các quốc gia, màu đỏ gradient nhấn mạnh thứ hạng.
+
+### 2. `bar_top15_lowest_price.png`
+- **Loại**: Horizontal bar chart
+- **Nội dung**: Top 15 quốc gia có giá Big Mac trung bình **thấp nhất**.
+- **Tính chất**: Đối chiếu với biểu đồ #1, phản ánh sức mua và chi phí sinh hoạt thấp.
+
+### 3. `line_avg_price_by_year.png`
+- **Loại**: Line chart + vùng shading (min–max)
+- **Nội dung**: Giá Big Mac USD trung bình toàn cầu theo từng năm, kèm dải min–max.
+- **Tính chất**: Thể hiện xu hướng lạm phát giá theo thời gian và mức độ phân tán giữa các nước.
+
+### 4. `hist_dollar_price.png`
+- **Loại**: Histogram + KDE curve
+- **Nội dung**: Phân phối giá Big Mac (USD) trên toàn bộ dataset.
+- **Tính chất**: Cho thấy phần lớn giá tập trung ở mức nào; thường lệch phải (right-skewed) do một số nước rất đắt.
+
+### 5. `scatter_gdp_vs_price.png`
+- **Loại**: Scatter plot + đường hồi quy tuyến tính
+- **Nội dung**: Mối quan hệ giữa GDP per capita và giá Big Mac (USD).
+- **Tính chất**: Tương quan dương – nước giàu hơn thường có giá Big Mac cao hơn; đường đỏ thể hiện xu hướng; kiểm chứng lý thuyết PPP.
+
+### 6. `heatmap_corr.png`
+- **Loại**: Heatmap tương quan Pearson
+- **Nội dung**: Ma trận tương quan giữa: `local_price`, `dollar_price`, `dollar_ex`, `USD_raw`, `GDP_dollar`, `adj_price`.
+- **Tính chất**: Màu đỏ = tương quan dương mạnh, màu xanh = tương quan âm; giúp phát hiện multicollinearity trước khi hồi quy.
+
+### 7. `boxplot_price_by_year.png`
+- **Loại**: Box plot
+- **Nội dung**: Phân phối giá Big Mac (USD) theo từng năm.
+- **Tính chất**: Thể hiện median, tứ phân vị (IQR) và outlier từng năm; thấy rõ xu hướng giá tăng dần và sự mở rộng khoảng cách giữa các nước.
+
+### 8. `line_usa_price.png`
+- **Loại**: Line chart
+- **Nội dung**: Xu hướng giá Big Mac tại **Mỹ (USD)** qua các kỳ khảo sát.
+- **Tính chất**: Dùng làm mốc tham chiếu vì `USD_raw = 0` tại Mỹ; phản ánh lạm phát nội địa Mỹ theo thời gian.
+
+### 9. `scatter_actual_vs_pred.png`
+- **Loại**: Scatter plot
+- **Nội dung**: Giá thực tế vs giá dự đoán từ mô hình Linear Regression.
+- **Tính chất**: Điểm càng gần đường `y = x` (đường đỏ đứt) → mô hình càng chính xác; phát hiện bias hệ thống (over/under-predict).
+
+### 10. `residual_plot.png`
+- **Loại**: Scatter plot (phần dư)
+- **Nội dung**: Phần dư (residual = thực tế − dự đoán) theo giá dự đoán.
+- **Tính chất**: Phần dư ngẫu nhiên quanh 0 → giả định tuyến tính được thoả; nếu có cấu trúc hình phễu → phương sai không đồng nhất (heteroscedasticity).
+
+### 11. `line_top_countries.png`
+- **Loại**: Multi-line chart
+- **Nội dung**: Xu hướng giá Big Mac theo năm của **top 10 quốc gia** có nhiều dữ liệu nhất.
+- **Tính chất**: So sánh đồng thời nhiều quốc gia trên cùng trục thời gian; thể hiện sự phân kỳ/hội tụ giá giữa các nền kinh tế.
+
+### 12. `bar_usd_raw_overvalued.png`
+- **Loại**: Horizontal bar chart (hai màu đỏ/xanh)
+- **Nội dung**: Chỉ số `USD_raw` trung bình của từng quốc gia – mức độ đắt/rẻ so với USD.
+- **Tính chất**: **Đỏ** = đồng tiền định giá cao hơn USD (over-valued), **xanh** = định giá thấp hơn (under-valued); trực quan hoá lý thuyết Purchasing Power Parity (PPP).
+
+### 13. `heatmap_price_country_year.png`
+- **Loại**: Heatmap 2D (quốc gia × năm)
+- **Nội dung**: Giá Big Mac (USD) trung bình theo **quốc gia × năm** (top 30 quốc gia).
+- **Tính chất**: Màu vàng–đỏ = giá cao; dễ thấy quốc gia nào luôn đắt/rẻ và xu hướng tăng giá lan rộng theo thời gian trên toàn ma trận.
+
+### 14. `scatter_gdp_vs_usdraw.png`
+- **Loại**: Scatter plot (tô màu theo thập kỷ)
+- **Nội dung**: GDP per capita vs chỉ số định giá `USD_raw`, phân nhóm theo thập kỷ.
+- **Tính chất**: Kiểm tra xem nước giàu hơn có xu hướng định giá cao hơn không; màu sắc theo thập kỷ cho thấy sự dịch chuyển mẫu hình theo thời gian – liên quan đến hội tụ kinh tế.
+
+### 15. `violin_price_by_decade.png`
+- **Loại**: Violin plot
+- **Nội dung**: Phân phối giá Big Mac (USD) theo từng **thập kỷ** (2000s, 2010s, 2020s).
+- **Tính chất**: Kết hợp ưu điểm của box plot (median, IQR) và histogram (hình dạng phân phối); thể hiện rõ sự thay đổi của mật độ giá và độ trải rộng qua các thập kỷ.
+
+---
+
+## Cách chạy
+
 ```bash
-# Ubuntu/Debian
-sudo apt update && sudo apt install -y default-jdk
-
-# macOS (homebrew)
-brew install openjdk@11
-```
-
-### Tạo virtual environment & cài thư viện
-
-```bash
-# Tạo venv
-python -m venv .venv
-
-# Kích hoạt (Linux/macOS)
-source .venv/bin/activate
-
-# Kích hoạt (Windows)
-.venv\Scripts\activate
-
-# Cài dependencies
+# Cài đặt thư viện
 pip install -r requirements.txt
-```
 
----
-
-## 4. Tải dataset
-
-### Cách A – Tự động (khuyến nghị)
-
-`main.py` sẽ **tự động tải dataset qua `kagglehub`** nếu file chưa tồn tại.
-Chỉ cần đảm bảo đã cấu hình Kaggle API credentials:
-
-```bash
-# Cài kagglehub (đã có trong requirements.txt)
-pip install kagglehub
-
-# Lần đầu chạy, kagglehub sẽ yêu cầu đăng nhập Kaggle
-# Tạo API token tại: https://www.kaggle.com/settings → API → Create New Token
-# Đặt file kaggle.json vào ~/.kaggle/kaggle.json
-mkdir -p ~/.kaggle
-mv ~/Downloads/kaggle.json ~/.kaggle/
-chmod 600 ~/.kaggle/kaggle.json
-```
-
-Sau đó chạy thẳng `python main.py` – dataset sẽ tự tải và copy vào `data/`.
-
-### Cách B – Tải thủ công
-
-1. Truy cập: https://www.kaggle.com/datasets/mrmorj/big-mac-index-data
-2. Đăng nhập Kaggle → nhấn **Download**
-3. Giải nén, đổi tên file thành `big mac.csv`
-4. Đặt vào thư mục `data/`:
-
-```
-btl_truc_quan_hoa/
-└── data/
-    └── big mac.csv
-```
-
----
-
-## 5. Cách chạy
-
-### Chạy pipeline đầy đủ (khuyến nghị)
-
-```bash
+# Chạy pipeline (tự động tải dataset nếu chưa có, cần kaggle API key)
 python main.py
+
+# Hoặc chỉ định file Big Mac thủ công
+python main.py --data "data/big mac.csv"
 ```
 
-### Chỉ định đường dẫn CSV tùy chỉnh
-
-```bash
-python main.py --data /đường/dẫn/tới/big_mac.csv
-```
-
-### Chạy từng module riêng lẻ (để kiểm tra)
-
-```bash
-# Preprocessing
-python -c "
-import sys; sys.path.insert(0,'src')
-from preprocessing import create_spark_session, run_preprocessing
-spark = create_spark_session()
-run_preprocessing(spark, 'data/big mac.csv', 'outputs/clean_data.parquet')
-spark.stop()
-"
-```
-
-### Xem kết quả biểu đồ
-
-Sau khi chạy xong, toàn bộ biểu đồ nằm trong thư mục `outputs/`:
-```bash
-ls outputs/*.png
-```
-
-Mở xem trực tiếp (Linux):
-```bash
-eog outputs/          # Eye of GNOME
-# hoặc
-xdg-open outputs/line_avg_price_by_year.png
-```
+> **Lưu ý**: Cần cấu hình Kaggle API (`~/.kaggle/kaggle.json`) để tự động tải dataset.
 
 ---
 
-## 6. Giải thích từng bước
+## Kết quả đầu ra (`outputs/`)
 
-### Bước 1 – Preprocessing (`src/preprocessing.py`)
-
-| Thao tác | Chi tiết |
+| File | Mô tả |
 |---|---|
-| Đọc dữ liệu | `spark.read.csv()` với `header=True`, `inferSchema=True` |
-| Chuẩn hóa tên cột | Loại bỏ khoảng trắng, dấu gạch ngang |
-| Ép kiểu | Các cột số → `DoubleType`; `date` → `DateType` |
-| Trích xuất năm | `F.year(col("date"))` → cột `year` |
-| Xử lý null | Dropout theo cột `local_price`, `dollar_price`, `dollar_ex`; fillna GDP bằng median |
-| Lưu kết quả | Parquet tại `outputs/clean_data.parquet` |
-
-### Bước 2 – EDA (`src/eda.py`)
-
-| Phân tích | Mô tả |
-|---|---|
-| Thống kê mô tả | `df.describe()` cho các cột số |
-| Tổng quan | Số quốc gia, khoảng năm, số bản ghi |
-| Top quốc gia | `groupBy + avg` sắp xếp giảm/tăng dần |
-| Giá theo năm | `groupBy year + avg/min/max` |
-| Phân phối giá | Bucket theo $1 USD |
-| Tương quan | `df.stat.corr("GDP_dollar", "dollar_price")` |
-| Kiểm tra null | Đếm null từng cột |
-
-### Bước 3 – Linear Regression (`src/regression.py`)
-
-**Mục tiêu:** Dự đoán `dollar_price` (giá Big Mac bằng USD)
-
-**Đặc trưng sử dụng:**
-- `GDP_dollar` – GDP bình quân đầu người
-- `dollar_ex` – Tỉ giá hối đoái
-- `year` – Năm
-
-**Pipeline MLlib:**
-```
-VectorAssembler → StandardScaler → LinearRegression
-```
-
-| Tham số | Giá trị |
-|---|---|
-| Train/Test split | 80% / 20% |
-| Seed | 42 |
-| maxIter | 100 |
-| regParam | 0.1 (Ridge regularization) |
-| elasticNetParam | 0.0 |
-
-**Metrics đánh giá:** RMSE, R², MAE
-
-### Bước 4 – Visualization (`src/visualization.py`)
-
-| File | Biểu đồ |
-|---|---|
-| `bar_top15_highest_price.png` | Top 15 quốc gia giá cao nhất (bar chart ngang) |
-| `bar_top15_lowest_price.png` | Top 15 quốc gia giá thấp nhất |
-| `line_avg_price_by_year.png` | Giá TB toàn cầu theo năm với dải min-max |
-| `hist_dollar_price.png` | Histogram + KDE phân phối giá |
-| `scatter_gdp_vs_price.png` | Scatter GDP vs giá kèm đường hồi quy |
-| `heatmap_corr.png` | Heatmap tương quan các biến số |
-| `boxplot_price_by_year.png` | Boxplot phân phối giá theo từng năm |
-| `line_usa_price.png` | Xu hướng lịch sử giá tại Mỹ |
-| `scatter_actual_vs_pred.png` | Giá thực tế vs dự đoán (kết quả regression) |
-| `residual_plot.png` | Phân tích phần dư (residual analysis) |
-
----
-
-## 7. Kết quả đầu ra
-
-Sau khi chạy `main.py`, thư mục `outputs/` chứa:
-
-```
-outputs/
-├── clean_data.parquet/          ← Dữ liệu sạch (dạng Parquet)
-├── regression_metrics.json      ← RMSE, R², MAE, coefficients
-└── *.png                        ← 10 biểu đồ trực quan
-```
-
-**Nội dung `regression_metrics.json`:**
-```json
-{
-  "rmse": 0.xxxx,
-  "r2": 0.xxxx,
-  "mae": 0.xxxx,
-  "intercept": x.xxxx,
-  "coefficients": {
-    "GDP_dollar": x.xxxxxx,
-    "dollar_ex": x.xxxxxx,
-    "year": x.xxxxxx
-  }
-}
-```
-
----
-
-## 8. Phân tích & nhận xét
-
-### Big Mac Index là gì?
-
-Big Mac Index được The Economist giới thiệu năm 1986 như một thước đo **Purchasing Power Parity (PPP)** – sức mua tương đương giữa các quốc gia. Ý tưởng: cùng một sản phẩm tiêu chuẩn (Big Mac) được bán ở khắp thế giới, nếu tỉ giá hối đoái phản ánh đúng PPP thì giá tính bằng USD phải như nhau ở mọi nơi.
-
-### Các nhận xét kỳ vọng
-
-1. **Xu hướng tăng theo thời gian:** Giá Big Mac USD tăng đều qua các năm do lạm phát toàn cầu.
-
-2. **Tương quan GDP – Giá:** Quốc gia có GDP cao hơn thường có giá Big Mac đắt hơn (Pearson r ≈ 0.6–0.8), vì chi phí lao động và vận hành cao hơn.
-
-3. **Biến động tỉ giá:** `dollar_ex` ảnh hưởng lớn đến `dollar_price` – khi đồng nội tệ mất giá, Big Mac tính USD rẻ hơn.
-
-4. **Kết quả hồi quy:** R² dự kiến khoảng 0.5–0.7 với 3 đặc trưng. Residuals có thể không hoàn toàn ngẫu nhiên do thiếu đặc trưng lạm phát địa phương.
-
-5. **Outliers:** Thụy Sĩ, Na Uy, Đan Mạch thường xuất hiện ở top giá cao nhất; Ukraina, Pakistan, Ai Cập ở nhóm thấp nhất.
-
-### Mở rộng
-
-- Thêm đặc trưng: tỉ lệ lạm phát, dân số, vùng địa lý (one-hot encoding)
-- Thử mô hình phi tuyến: Random Forest, Gradient Boosting (Spark MLlib)
-- Phân tích time-series: dự đoán giá Big Mac tương lai bằng ARIMA hoặc Prophet
+| `enriched_snapshot.csv` | Snapshot dữ liệu sau khi enrich GDP per capita |
+| `enriched_snapshot.parquet` | Snapshot dạng Parquet để tái sử dụng nhanh |
+| `clean_data.parquet` | Dữ liệu sạch cuối cùng dạng Parquet |
+| `regression_metrics.json` | Chỉ số R², RMSE, MAE của mô hình hồi quy |
+| `*.png` (15 file) | Toàn bộ biểu đồ trực quan hoá |
