@@ -20,6 +20,7 @@ Biểu đồ tạo ra (lưu vào thư mục outputs/):
   13. heatmap_price_country_year.png   – Heatmap giá × quốc gia × năm
   14. scatter_gdp_vs_usdraw.png        – GDP per capita vs chỉ số định giá
   15. violin_price_by_decade.png       – Violin plot giá theo thập kỷ
+  16. choropleth_bigmac_index.html/png – Bản đồ thế giới Big Mac Index (USD_raw)
 """
 
 import os
@@ -29,6 +30,7 @@ matplotlib.use("Agg")          # chạy không cần GUI
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import seaborn as sns
+import plotly.express as px
 from pyspark.sql import functions as F
 
 # Thiết lập style chung
@@ -381,6 +383,64 @@ def plot_violin_by_decade(df):
     _save(fig, "violin_price_by_decade.png")
 
 
+# ── 16. Choropleth – Big Mac Index (USD_raw) theo quốc gia ───────────────────
+def plot_choropleth_bigmac_index(df):
+    """
+    Bản đồ thế giới tô màu theo chỉ số Big Mac (USD_raw):
+      - Đỏ  (+): đồng tiền định giá cao hơn USD
+      - Xanh (−): đồng tiền định giá thấp hơn USD
+    Lưu file HTML tương tác và ảnh PNG tĩnh vào outputs/.
+    """
+    cols = [c for c in ["iso_a3", "name", "USD_raw", "year"] if c in df.columns]
+    pdf = df.select(cols).dropna().toPandas()
+
+    # Lấy giá trị USD_raw mới nhất cho mỗi quốc gia
+    latest_year = int(pdf["year"].max())
+    latest = pdf[pdf["year"] == latest_year].copy()
+    # Nếu năm mới nhất ít quốc gia, lùi về năm có nhiều nhất
+    if len(latest) < 10:
+        latest = pdf.sort_values("year", ascending=False).drop_duplicates("iso_a3")
+
+    latest["USD_raw_pct"] = (latest["USD_raw"] * 100).round(1)
+
+    fig = px.choropleth(
+        latest,
+        locations="iso_a3",
+        color="USD_raw_pct",
+        hover_name="name",
+        hover_data={"USD_raw_pct": True, "iso_a3": False},
+        color_continuous_scale=[
+            (0.0, "#2166ac"),   # under-valued (deep blue)
+            (0.5, "#f7f7f7"),   # at par (white)
+            (1.0, "#d6604d"),   # over-valued (red)
+        ],
+        color_continuous_midpoint=0,
+        range_color=[-80, 80],
+        labels={"USD_raw_pct": "Under(−)/Over(+) vs USD (%)"},
+        title=f"Big Mac Index – Raw Index ({latest_year})<br>"
+              "<sup>Under(−)/Over(+) valuation against the dollar, %</sup>",
+    )
+    fig.update_layout(
+        geo=dict(showframe=False, showcoastlines=True, projection_type="natural earth"),
+        coloraxis_colorbar=dict(title="% vs USD", ticksuffix="%"),
+        margin=dict(l=0, r=0, t=60, b=0),
+        width=1100, height=600,
+    )
+
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    html_path = os.path.join(OUTPUT_DIR, "choropleth_bigmac_index.html")
+    fig.write_html(html_path)
+    print(f"[Viz] Đã lưu bản đồ tương tác: {html_path}")
+
+    # Lưu ảnh PNG (cần kaleido)
+    try:
+        png_path = os.path.join(OUTPUT_DIR, "choropleth_bigmac_index.png")
+        fig.write_image(png_path, scale=2)
+        print(f"[Viz] Đã lưu ảnh tĩnh: {png_path}")
+    except Exception as e:
+        print(f"[Viz] Không thể lưu PNG (cài kaleido để bật): {e}")
+
+
 # ── Entry point ────────────────────────────────────────────────────────────────
 def run_visualization(df, predictions_df=None):
     """Chạy toàn bộ pipeline trực quan hóa."""
@@ -395,11 +455,11 @@ def run_visualization(df, predictions_df=None):
     plot_boxplot_by_year(df)
     plot_usa_trend(df)
     plot_regression_results(predictions_df)
-    # Biểu đồ mới
     plot_top_countries_trend(df)
     plot_usd_raw_by_country(df)
     plot_heatmap_country_year(df)
     plot_gdp_vs_usdraw(df)
     plot_violin_by_decade(df)
+    plot_choropleth_bigmac_index(df)
     print(f"[Viz] Tất cả biểu đồ đã lưu trong thư mục: {OUTPUT_DIR}/")
     print("=" * 60)

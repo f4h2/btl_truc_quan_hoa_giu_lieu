@@ -217,3 +217,7 @@ python main.py --data "data/big mac.csv"
 | `clean_data.parquet` | Dữ liệu sạch cuối cùng dạng Parquet |
 | `regression_metrics.json` | Chỉ số R², RMSE, MAE của mô hình hồi quy |
 | `*.png` (15 file) | Toàn bộ biểu đồ trực quan hoá |
+
+
+
+xdg-open choropleth_bigmac_index.html
